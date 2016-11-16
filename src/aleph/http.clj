@@ -236,7 +236,8 @@
                                ;; request failed, if it was due to a timeout close the connection
                                (d/catch'
                                    (fn [e]
-                                     (if (instance? TimeoutException e)
+                                     (if (or (instance? TimeoutException e)
+                                             (= (.getMessage e) "connection was closed"))
                                        (flow/dispose pool k conn)
                                        (flow/release pool k conn))
                                      (d/error-deferred e)))
