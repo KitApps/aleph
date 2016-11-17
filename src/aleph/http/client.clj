@@ -143,8 +143,7 @@
 
       :exception-caught
       ([_ ctx ex]
-        (when-not (instance? IOException ex)
-          (log/warn ex "error in HTTP client")))
+       (log/warn ex "error in HTTP client"))
 
       :channel-inactive
       ([_ ctx]
