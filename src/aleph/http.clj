@@ -4,6 +4,7 @@
     [clojure.string :as str]
     [manifold.deferred :as d]
     [manifold.executor :as executor]
+    [clojure.tools.logging :as log]
     [aleph.flow :as flow]
     [aleph.http
      [server :as server]
@@ -244,11 +245,18 @@
                                  (fn [rsp]
 
                                    ;; only release the connection back once the response is complete
-                                   (d/chain' (:aleph/complete rsp)
-                                     (fn [early?]
-                                       (if (or early? (not (:keep-alive? rsp)))
-                                         (flow/dispose pool k conn)
-                                         (flow/release pool k conn))))
+                                   (-> (:aleph/complete rsp)
+                                       (maybe-timeout! 60000)
+                                       (d/catch'
+                                           (fn [e]
+                                             (log/error e ":aleph/complete resolving failed")
+                                             (flow/dispose pool k conn)
+                                             (d/error-deferred e)))
+                                       (d/chain'
+                                        (fn [early?]
+                                          (if (or early? (not (:keep-alive? rsp)))
+                                            (flow/dispose pool k conn)
+                                            (flow/release pool k conn)))))
                                    (-> rsp
                                      (dissoc :aleph/complete)
                                      (assoc :connection-time (- end start)))))))))
