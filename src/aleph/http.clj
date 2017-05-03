@@ -27,6 +27,7 @@
    | `port` | the port the server will bind to.  If `0`, the server will bind to a random port.
    | `socket-address` |  a `java.net.SocketAddress` specifying both the port and interface to bind to.
    | `bootstrap-transform` | a function that takes an `io.netty.bootstrap.ServerBootstrap` object, which represents the server, and modifies it.
+   | `ssl-context` | an `io.netty.handler.ssl.SslContext` object if an SSL connection is desired |
    | `pipeline-transform` | a function that takes an `io.netty.channel.ChannelPipeline` object, which represents a connection, and modifies it.
    | `executor` | a `java.util.concurrent.Executor` which is used to handle individual requests.  To avoid this indirection you may specify `:none`, but in this case extreme care must be taken to avoid blocking operations on the handler's thread.
    | `shutdown-executor?` | if `true`, the executor will be shut down when `.close()` is called on the server, defaults to `true`.
@@ -220,9 +221,9 @@
 
                      ;; connection failed, bail out
                      (d/catch'
-                         (fn [e]
-                           (flow/dispose pool k conn)
-                           (d/error-deferred e)))
+                       (fn [e]
+                         (flow/dispose pool k conn)
+                         (d/error-deferred e)))
 
                      ;; actually make the request now
                      (d/chain'
@@ -236,9 +237,9 @@
 
                                ;; request failed, dispose of the connection
                                (d/catch'
-                                   (fn [e]
-                                     (flow/dispose pool k conn)
-                                     (d/error-deferred e)))
+                                 (fn [e]
+                                   (flow/dispose pool k conn)
+                                   (d/error-deferred e)))
 
                                ;; clean up the response
                                (d/chain'
@@ -254,7 +255,9 @@
                                              (d/error-deferred e)))
                                        (d/chain'
                                         (fn [early?]
-                                          (if (or early? (not (:keep-alive? rsp)))
+                                          (if (or early?
+                                                (not (:aleph/keep-alive? rsp))
+                                                (<= 400 (:status rsp)))
                                             (flow/dispose pool k conn)
                                             (flow/release pool k conn)))))
                                    (-> rsp
@@ -263,7 +266,7 @@
 
                        (fn [rsp]
                          (middleware/handle-redirects request req rsp))))))))))
-       req))))
+        req))))
 
 (defn- req
   ([method url]

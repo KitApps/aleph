@@ -1,4 +1,6 @@
 (ns aleph.examples.http
+  (:import
+    [io.netty.handler.ssl SslContextBuilder])
   (:require
     [compojure.core :as compojure :refer [GET]]
     [ring.middleware.params :as params]
@@ -8,7 +10,8 @@
     [byte-streams :as bs]
     [manifold.stream :as s]
     [manifold.deferred :as d]
-    [clojure.core.async :as a]))
+    [clojure.core.async :as a]
+    [clojure.java.io :refer [file]]))
 
 ;; For HTTP, Aleph implements a superset of the
 ;; [Ring spec](https://github.com/ring-clojure/ring/blob/master/SPEC), which means it can be
@@ -18,6 +21,8 @@
 ;; will be illustrated below.
 
 ;; Complete documentation for the `aleph.http` namespace can be found [here](http://aleph.io/codox/aleph/aleph.http.html).
+
+;; ## building servers
 
 (defn hello-world-handler
   "A basic Ring handler which immediately returns 'hello world'"
@@ -43,10 +48,9 @@
     (hello-world-handler req)))
 
 ;; Compojure will normally dereference deferreds and return the realized value.
-;; This unfortunately blocks the thread. Since aleph can accept the un-realized
-;; deferred, we extend compojure's Renderable protocol to pass the deferred
-;; through unchanged so that the thread won't be blocked.
-
+;; Unfortunately, this blocks the thread. Since Aleph can accept the unrealized
+;; deferred, we extend Compojure's `Renderable` protocol to pass the deferred
+;; through unchanged so it can be handled asynchronously.
 (extend-protocol Renderable
   manifold.deferred.Deferred
   (render [d _] d))
@@ -86,7 +90,8 @@
 
 (defn streaming-numbers-handler
   "However, we can always still use lazy sequences. This is still useful when the upstream
-   data provider exposes the stream of data as an `Iterator` or a similar blocking mechanism."
+   data provider exposes the stream of data as an `Iterator` or a similar blocking mechanism.
+   This will, however, hold onto a thread until the sequence is exhausted."
   [{:keys [params]}]
   (let [cnt (Integer/parseInt (get params "count" "0"))]
     {:status 200
@@ -133,6 +138,8 @@
       (route/not-found "No such page."))))
 
 (def s (http/start-server handler {:port 10000}))
+
+;; ## using the http client
 
 ;; Here we immediately dereference the response, get the `:body`, which is an InputStream,
 ;; and coerce it to a string using `byte-strings/to-string`.
@@ -191,3 +198,35 @@
 ;; go.
 
 (.close s)
+
+;; ### TLS client certificate authentication
+
+;; Aleph also supports TLS client certificate authentication. To make such connections, we must
+;; build a custom SSL context and pass it to a connection pool that we'll use to make HTTP requests.
+
+(defn build-ssl-context
+  "Given the certificate authority (ca)'s certificate, a client certificate, and the key for the
+  client certificate in PKCS#8 format, we can build an SSL context for mutual TLS authentication."
+  [ca cert key]
+  (-> (SslContextBuilder/forClient)
+      (.trustManager (file ca))
+      (.keyManager (file cert) (file key))
+      .build))
+
+(defn ssl-connection-pool
+  "To use the SSL context, we set the `:ssl-context` connection option on a connection pool. This
+  allows the pool to make TLS connections with our client certificate."
+  [ca cert key]
+  (http/connection-pool
+   {:connection-options
+    {:ssl-context (build-ssl-context ca cert key)}}))
+
+;; We can use our `ssl-connection-pool` builder to GET pages from our target endpoint by passing the
+;; `:pool` option to `aleph.http/get`.
+
+@(d/chain
+  (http/get
+   "https://server.with.tls.client.auth"
+   {:pool (ssl-connection-pool "path/to/ca.crt" "path/to/cert.crt" "path/to/key.k8")})
+  :body
+  bs/to-string)

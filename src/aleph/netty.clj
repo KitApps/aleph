@@ -30,7 +30,7 @@
     [io.netty.channel.socket ServerSocketChannel]
     [io.netty.channel.socket.nio NioServerSocketChannel
      NioSocketChannel]
-    [io.netty.handler.ssl SslContext]
+    [io.netty.handler.ssl SslContext SslContextBuilder]
     [io.netty.handler.ssl.util
      SelfSignedCertificate InsecureTrustManagerFactory]
     [io.netty.util ResourceLeakDetector
@@ -38,7 +38,7 @@
     [java.net SocketAddress InetSocketAddress]
     [io.netty.util.concurrent
      GenericFutureListener Future DefaultThreadFactory]
-    [java.io InputStream]
+    [java.io InputStream File]
     [java.nio ByteBuffer]
     [io.netty.util.internal SystemPropertyUtil]
     [java.util.concurrent
@@ -49,7 +49,9 @@
      InternalLoggerFactory
      Log4JLoggerFactory
      Slf4JLoggerFactory
-     JdkLoggerFactory]))
+     JdkLoggerFactory]
+    [java.security.cert X509Certificate]
+    [java.security PrivateKey]))
 
 ;;;
 
@@ -69,7 +71,7 @@
 
 (defn set-logger! [logger]
   (InternalLoggerFactory/setDefaultFactory
-    (case
+    (case logger
       :log4j (Log4JLoggerFactory.)
       :slf4j (Slf4JLoggerFactory.)
       :jdk   (JdkLoggerFactory.))))
@@ -309,7 +311,8 @@
 (manifold/def-sink ChannelSink
   [coerce-fn
    downstream?
-   ^Channel ch]
+   ^Channel ch
+   additional-description]
   (close [this]
     (when downstream?
       (close ch))
@@ -317,11 +320,13 @@
     true)
   (description [_]
     (let [ch (channel ch)]
-      {:type "netty"
-       :closed? (not (.isActive ch))
-       :sink? true
-       :connection (assoc (connection-stats ch false)
-                     :direction :outbound)}))
+      (merge
+       {:type       "netty"
+        :closed?    (not (.isActive ch))
+        :sink?      true
+        :connection (assoc (connection-stats ch false)
+                           :direction :outbound)}
+       (additional-description))))
   (isSynchronous [_]
     false)
   (put [this msg blocking?]
@@ -347,20 +352,23 @@
 
 (defn sink
   ([ch]
-    (sink ch true identity))
+   (sink ch true identity (fn [])))
   ([ch downstream? coerce-fn]
-    (let [count (AtomicLong. 0)
-          last-count (AtomicLong. 0)
-          sink (->ChannelSink
-                 coerce-fn
-                 downstream?
-                 ch)]
+   (sink ch downstream? coerce-fn (fn [])))
+  ([ch downstream? coerce-fn additional-description]
+   (let [count (AtomicLong. 0)
+         last-count (AtomicLong. 0)
+         sink (->ChannelSink
+               coerce-fn
+               downstream?
+               ch
+               additional-description)]
 
-      (d/chain' (.closeFuture (channel ch))
-        wrap-future
-        (fn [_] (s/close! sink)))
+     (d/chain' (.closeFuture (channel ch))
+               wrap-future
+               (fn [_] (s/close! sink)))
 
-      (doto sink (reset-meta! {:aleph/channel ch})))))
+     (doto sink (reset-meta! {:aleph/channel ch})))))
 
 (defn source
   [^Channel ch]
@@ -604,8 +612,52 @@
 (defn insecure-ssl-client-context []
   (SslContext/newClientContext InsecureTrustManagerFactory/INSTANCE))
 
-(defn ssl-client-context []
-  (SslContext/newClientContext))
+(defn- check-ssl-args
+  [private-key certificate-chain]
+  (when-not
+    (or (and (instance? File private-key) (instance? File certificate-chain))
+        (and (instance? InputStream private-key) (instance? InputStream certificate-chain))
+        (and (instance? PrivateKey private-key) (instance? (class (into-array X509Certificate [])) certificate-chain)))
+    (throw (IllegalArgumentException. "ssl-client-context arguments invalid"))))
+
+(set! *warn-on-reflection* false)
+
+(defn ssl-client-context
+  "Creates a new client SSL context.
+
+  Keyword arguments are:
+
+  |:---|:----
+  | `private-key` | A `java.io.File`, `java.io.InputStream`, or `java.security.PrivateKey` containing the client-side private key.
+  | `certificate-chain` | A `java.io.File`, `java.io.InputStream`, or array of `java.security.cert.X509Certificate` containing the client's certificate chain.
+  | `private-key-password` | A string, the private key's password (optional).
+  | `trust-store` | A `java.io.File`, `java.io.InputStream`, array of `java.security.cert.X509Certificate`, or a `javax.net.ssl.TrustManagerFactory` to initialize the context's trust manager.
+
+  Note that if specified, the types of `private-key` and `certificate-chain` must be
+  \"compatible\": either both input streams, both files, or a private key and an array
+  of certificates."
+  ([] (ssl-client-context {}))
+  ([{:keys [private-key private-key-password certificate-chain trust-store]}]
+   (-> (SslContextBuilder/forClient)
+     (#(if (and private-key certificate-chain)
+         (do
+           (check-ssl-args private-key certificate-chain)
+           (if (instance? (class (into-array X509Certificate [])) certificate-chain)
+             (.keyManager %
+               private-key
+               private-key-password
+               certificate-chain)
+             (.keyManager %
+               certificate-chain
+               private-key
+               private-key-password)))
+         %))
+     (#(if trust-store
+         (.trustManager % trust-store)
+         %))
+     .build)))
+
+(set! *warn-on-reflection* true)
 
 ;;;
 
