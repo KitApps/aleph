@@ -1,4 +1,4 @@
-(defproject aleph "0.4.3-complete-timeout"
+(defproject com.attendify/aleph "0.4.3-complete-timeout-max-queue-size"
   :description "a framework for asynchronous communication"
   :repositories {"jboss" "http://repository.jboss.org/nexus/content/groups/public/"
                  "sonatype-oss-public" "https://oss.sonatype.org/content/groups/public/"}
